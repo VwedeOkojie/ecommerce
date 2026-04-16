@@ -1,0 +1,165 @@
+-- ============================================================
+-- eCommerce Orders — Data Cleaning & Analysis
+-- Tool: PostgreSQL (pgAdmin 4)
+-- ============================================================
+
+
+-- ============================================================
+-- STEP 1: LOAD RAW DATA
+-- ============================================================
+
+-- Import ecommerce_orders_raw.csv into pgAdmin 4
+-- Right-click table → Import/Export → Select file
+
+
+-- ============================================================
+-- STEP 2: DATA CLEANING
+-- ============================================================
+
+-- 2.1 Check for duplicates
+SELECT order_id, COUNT(*) AS duplicates
+FROM ecommerce_orders_raw
+GROUP BY order_id
+HAVING COUNT(*) > 1;
+
+-- 2.2 Remove duplicates using ROW_NUMBER()
+CREATE TABLE ecommerce_orders_clean AS
+SELECT *
+FROM (
+	SELECT *,
+		ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY order_id) AS row_num
+	FROM ecommerce_orders_raw
+) AS ranked
+WHERE row_num = 1;
+
+-- Drop helper column
+ALTER TABLE ecommerce_orders_clean
+DROP COLUMN row_num;
+
+
+-- 2.3 Check for inconsistent date formats
+SELECT order_id, order_date
+FROM ecommerce_orders_clean
+WHERE order_date NOT LIKE '2024-%';
+
+-- Fix inconsistent date
+UPDATE ecommerce_orders_clean
+SET order_date = '2024-01-25'
+WHERE order_id = 1016;
+
+-- Verify fix
+SELECT order_id, order_date
+FROM ecommerce_orders_clean
+WHERE order_id = 1016;
+
+-- Cast order_date column to DATE type
+ALTER TABLE ecommerce_orders_clean
+ALTER COLUMN order_date TYPE DATE
+USING order_date::DATE;
+
+
+-- 2.4 Check for case inconsistencies
+SELECT DISTINCT product_category
+FROM ecommerce_orders_clean
+ORDER BY product_category;
+
+SELECT DISTINCT payment_method
+FROM ecommerce_orders_clean
+ORDER BY payment_method;
+
+-- Fix product_category casing
+UPDATE ecommerce_orders_clean
+SET product_category = INITCAP(product_category);
+
+-- Fix payment_method casing
+UPDATE ecommerce_orders_clean
+SET payment_method = 'PayPal'
+WHERE LOWER(payment_method) = 'paypal';
+
+-- Verify fixes
+SELECT DISTINCT product_category FROM ecommerce_orders_clean;
+SELECT DISTINCT payment_method FROM ecommerce_orders_clean;
+
+
+-- 2.5 Check for price outliers
+SELECT order_id, product_name, unit_price
+FROM ecommerce_orders_clean
+WHERE unit_price > 500;
+
+-- Fix price outlier (missing decimal point)
+UPDATE ecommerce_orders_clean
+SET unit_price = 29.99
+WHERE order_id = 1098;
+
+-- Verify fix
+SELECT order_id, unit_price
+FROM ecommerce_orders_clean
+WHERE order_id = 1098;
+
+
+-- 2.6 Check for missing values
+SELECT *
+FROM ecommerce_orders_clean
+WHERE customer_id IS NULL
+   OR customer_name IS NULL
+   OR email IS NULL;
+
+-- Flag incomplete records (order revenue retained)
+UPDATE ecommerce_orders_clean
+SET customer_id   = 'Unknown',
+    customer_name = 'Unknown',
+    email         = 'Unknown'
+WHERE order_id = 1121;
+
+-- Verify clean table row count
+SELECT COUNT(*) FROM ecommerce_orders_clean;
+
+
+-- ============================================================
+-- STEP 3: ANALYSIS
+-- ============================================================
+
+-- 3.1 Total revenue by product category
+SELECT
+	product_category,
+	ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100)), 2) AS total_revenue
+FROM ecommerce_orders_clean
+GROUP BY product_category
+ORDER BY total_revenue DESC;
+
+-- 3.2 Average order value
+SELECT
+	ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100)) / COUNT(DISTINCT order_id), 2) AS avg_order_value
+FROM ecommerce_orders_clean;
+
+-- 3.3 Repeat purchase rate
+SELECT
+	ROUND(100.0 * COUNT(*) / (
+		SELECT COUNT(DISTINCT customer_id)
+		FROM ecommerce_orders_clean
+	), 2) AS repeat_purchase_rate_pct
+FROM (
+	SELECT customer_id
+	FROM ecommerce_orders_clean
+	WHERE customer_id != 'Unknown'
+	GROUP BY customer_id
+	HAVING COUNT(order_id) > 1
+) AS repeat_customers;
+
+-- 3.4 Revenue by country
+SELECT
+	country,
+	ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100)), 2) AS total_revenue
+FROM ecommerce_orders_clean
+GROUP BY country
+ORDER BY total_revenue DESC;
+
+-- 3.5 Top 5 selling products by units sold
+SELECT
+	product_name,
+	SUM(quantity) AS total_units_sold,
+	ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100)), 2) AS total_revenue
+FROM ecommerce_orders_clean
+GROUP BY product_name
+ORDER BY total_units_sold DESC
+LIMIT 5;
